@@ -24,13 +24,12 @@ description: >- # this means to ignore newlines until "baseurl:"
   Asterinas is an open-source community to advance Rust-based OSes
 baseurl: "" # the subpath of your site, e.g. /blog
 url: asterinas.github.io
-github_username:  asterinas
+github_username: asterinas
 
 # Build settings
 theme: minima
 plugins:
   - jekyll-feed
-
 # Exclude from processing.
 # The following items will not be processed, by default.
 # Any item listed under the `exclude:` key here will be automatically added to
