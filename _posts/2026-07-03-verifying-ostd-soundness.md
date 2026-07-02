@@ -21,13 +21,13 @@ When a small piece of code has an outsized impact on system reliability, it is t
 
 A year ago, *our [Phase I](https://asterinas.github.io/2025/02/13/towards-practical-formal-verification-for-a-general-purpose-os-in-rust.html) groundwork* successfully verified isolated functions within the memory management (`mm`) module in OSTD. While meaningful, these proofs were localized.
 
-**This post marks the completion of Phase II.** Not only have we verified *more* functions' individual behavior, but we have successfully proven that the public memory-management API is **sound**. Read on to discover how we achieve this result, and what it means for API consumers.
+**This post marks the completion of Phase II.** Not only have we verified *more* functions' individual behavior, but we have successfully proven that the public memory-management API is **sound**. Read on to discover what soundness means from a theoretical standpoint, and how we prove that it holds on this library.
 
 ## Methodology of the Verification
 
 First, let's start with a simple explanation of how verification works. To summarize: formal verification involves annotating program code with a mathematical specification, then running a verification tool that searches for a proof, often aided by additional annotations provided by the engineer. Specifications relate function inputs to their outputs and side-effects, and compose vertically to define the desired behavior of the entire call stack.
 
-Proving soundness goes a step beyong vertical composition. It also requires horizontal composition: the ability for function calls to be combined in any order without undermining the verification guarantees.
+Proving soundness goes a step beyond vertical composition. It also requires horizontal composition: the ability for function calls to be combined in any order without undermining the verification guarantees.
 
 In the remainder of this section, we will introduce our choice of verification tool, Verus, and how it naturally supports vertical composition. Then we will explain how horizontal composition becomes a soundness theorem.
 
@@ -39,7 +39,7 @@ For complex verification, Verus also allows us to add *ghost state* that exists 
 
 We define our own ghost types that track parts of the system state that are invisible to any given function. A page table is a tree of nodes and their entries, so a [`PageTableOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/struct.PageTableOwner.html) is a tree of [`EntryOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/entry_owners/struct.EntryOwner.html) and [`NodeOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/owners/struct.NodeOwner.html) ghost objects, each describing the current state of a concrete object in the system without the need for executable code to access it.
 
-To take a concrete example from the function `Entry::replace`, which overwrites a page table entry. In non-verified code, the function makes three promises when it calls the unsafe [`write_pte`](https://asterinas.github.io/vostd/ostd/mm/page_table/struct.PageTableGuard.html#method.write_pte):
+Take as a concrete example the function `Entry::replace`, which overwrites a page table entry. In non-verified code, the function makes three promises when it calls the unsafe [`write_pte`](https://asterinas.github.io/vostd/ostd/mm/page_table/struct.PageTableGuard.html#method.write_pte):
 
 ```rust
 // SAFETY:
@@ -90,7 +90,7 @@ What does that mean?
 
 "Soundness" is a contract between a library and its caller. As long as the caller does not exhibit UB, the library will not either. The caller is otherwise allowed to do anything it wants! Even if the caller's behavior is nonsensical, the library needs to respond with a well-defined result. In this case, the caller is assumed to be written in safe Rust, so it will satisfy its end of the bargain by definition.
 
-Let's call the caller $C$, and represent the caller linking with OSTD using the $\bowtie$ symbol, creating a whole program $C \bowtie \mathit{OSTD}$. We can think of the result of executing that program once as *trace* of interactions between the two components: a possibly infinite sequence of state transitions. We write $C \bowtie \mathit{OSTD} \rightsquigarrow t$ to mean that the trace $t$ can be produced by $C$ linked with OSTD.
+Let's call the caller $C$, and represent the caller linking with OSTD using the $\bowtie$ symbol, creating a whole program $C \bowtie \mathit{OSTD}$. We can think of the result of executing that program once as a *trace* of interactions between the two components: a possibly infinite sequence of state transitions. We write $C \bowtie \mathit{OSTD} \rightsquigarrow t$ to mean that the trace $t$ can be produced by $C$ linked with OSTD.
 
 Without getting into the details of how a trace is constructed, it consists of a potentially infinite sequence of events: calls from $C$ to OSTD, returns from OSTD back to $C$, panics, etc. A trace might encode:
 
@@ -98,7 +98,7 @@ Without getting into the details of how a trace is constructed, it consists of a
 - the program terminating or panicking - $\mathbf{terminates}(t)$,
 - the program getting *stuck* - $\mathbf{stuck}(t)$ - which means that the Rust abstract machine has no defined way to continue. In other words, *UB*.
 
-A trace that can be legally To sum up soundness in a single formula:
+To sum up soundness in a single formula:
 
 $$
 \forall ~ C ~ t. ~ \textnormal{safe}(C) \wedge C \bowtie \mathit{OSTD} \rightsquigarrow t \Rightarrow \mathbf{well\_defined}(t)
@@ -119,7 +119,7 @@ $$
 Let's examine the implications of this formulation:
 
 - We quantify over all possible callers, which is much harder than verifying a single program. The only obligation we impose on $C$ is $\mathbf{safe}(C)$: that the caller is well-typed under Rust's type system and contains no `unsafe` blocks.
-- We quantify over all traces; **for the kernel develeoper**, this means that they can call any OSTD functions in any order, with any arguments, and be assured of never reaching undefined behavior.
+- We quantify over all traces; **for the kernel developer**, this means that they can call any OSTD function in any order, with any arguments, and be assured of never reaching undefined behavior.
 - UB is undecidable, but by definition, a Verus-verified function is well-defined. We aren't looking for individual cases of UB, we are constructively proving that there is some defined behavior for any $C$, which inherently rules out UB.
 
 ### Proof by Invariant
@@ -172,7 +172,7 @@ Another common critique of formal verification is that proofs quickly become out
 
 ## From Promise to Proof
 
-To recap where we stand: we have verified soundness of a significant subset of OSTD, covering virtual memory management libraries from physical frames up to virtual address spaces. The diagram below shows the structure of the verified subset, with unverified `mm` modules to the left and the rest of OSTD to the right. Compare to last year's proof-of-concept: where we had picked out a handful of functions from each module, now we can simply list the modules. In general any function on a call path from the API functions is verified, save a few that are axiomatized as part of the trusted computing base.
+To recap where we stand: we have verified soundness of a significant subset of OSTD, covering virtual memory management libraries from physical frames up to virtual address spaces. The diagram below shows the structure of the verified subset, with unverified `mm` modules to the left and the rest of OSTD to the right. Vertically it shows the composition from high to low, with the `frame` module forming the foundation, but also exposed to the API, and the `page_table` module consumed by still higher level modules for managing virtual address spaces. Compare to last year's proof-of-concept: where we had picked out a handful of functions from each module, now we can simply list the modules. In general any function on a call path from the API functions is verified, save a few that are axiomatized as part of the trusted computing base.
 
 Outside of CortenMM we verify the system as a sequential program, with further concurrent verification a future goal. We are currently expanding into verifying the synchronization primitives in `sync`.
 
@@ -180,7 +180,7 @@ Outside of CortenMM we verify the system as a sequential program, with further c
 
 We verified part of a kernel with this approach, but very little of it is kernel-specific. Any Rust project relying on a complex `unsafe` core faces similar challenges, and can be approached in a similar way:
 
-- **Draw a schematic:** Abstract away implementation details and define ghost types that mimic the logical structure of your system. Define the relationship between the concrete and abstract. Keep it consistent and document it well. Especially if you have AI assistance, consisten patterns and a few examples will accelerate its performance.
+- **Draw a schematic:** Abstract away implementation details and define ghost types that mimic the logical structure of your system. Define the relationship between the concrete and abstract. Keep it consistent and document it well. Especially if you have AI assistance, consistent patterns and a few examples will accelerate its performance.
 - **Anchor the foundation:** Axiomatize mechanisms below the Rust level carefully in terms of how they interact with your abstract model. Use them to verify that low-level functions stay in sync with their specifications.
 - **Don't let the roof leak:** Need a strong precondition to verify a function? Not at the API level! Make it an invariant of the relevant ghost type, and prove that every API function preserves it. Don't make assumptions about the caller; constrain the whole system. When every API function is verified to preserve each invariant, with no extraneous preconditions, soundness follows by induction.
 - **Fill in the walls:** You can build up from the lowest level, or down from highest. Either way you will need to iterate. When verifying a caller, you will find that your callee needs a stronger postcondition, or a weaker precondition. When you expand an invariant, you will need to revisit the invariant preservation proofs. Specification changes ripple through the entire effort. Keep them incremental and they'll still be manageable.
