@@ -25,9 +25,11 @@ A year ago, *our [Phase I](https://asterinas.github.io/2025/02/13/towards-practi
 
 ## Methodology of the Verification
 
-First, let's start with a simple explanation of how verification works. To summarize: formal verification involves annotating program code with a mathematical specification, then running a verification tool that searches for a proof, often aided by additional annotations provided by the engineer. Specifications relate function inputs to their outputs and side-effects, and compose vertically to define the desired behavior of the entire call stack.
+First, let's start with a simple explanation of how verification works. To summarize: formal verification involves annotating program code with a mathematical specification describing its effect on the overall program state. A complex program's overall behavior arises emergently from disparate pieces of data, often managed by many functions and subsystems. The specification distills that complexity down to a simpler, unified structure, and describes individual functions' behavior in terms of that structure. Then, for each function, a verification tool analyzes the concrete structure of the code and attempts to construct a logical proof that the specification holds on all inputs. Often a verification engineer must add annotations to assist this process.
 
-Proving soundness goes a step beyond vertical composition. It also requires horizontal composition: the ability for function calls to be combined in any order without undermining the verification guarantees.
+Specifications naturally compose vertically, with the verification of one function depending on the verified behavior of other functions that it calls. At the lowest level, language primitives are given trusted specifications by the verification system, and each layer of verified functions builds on that foundation, precisely defining how the state changes at each level of the call stack. This is termed *correctness*.
+
+Proving soundness goes a step beyond vertical composition. It also requires horizontal composition: the ability for function calls to be combined in any order without undermining the verification guarantees. This is proven by an *invariant*: a property of system states that is guaranteed to always hold. Correctness proofs across the codebase prove that the invariant holds after each call, and therefore the system can never enter a state that would lead to UB.
 
 In the remainder of this section, we will introduce our choice of verification tool, Verus, and how it naturally supports vertical composition. Then we will explain how horizontal composition becomes a soundness theorem.
 
@@ -36,6 +38,54 @@ In the remainder of this section, we will introduce our choice of verification t
 Our verification tool of choice is [Verus](https://github.com/verus-lang/verus), which integrates directly with the Rust language. Verus code is Rust code, with additional constructs that allow us to annotate functions with preconditions (boolean formulae that must be true in order to safely call the function) and postconditions (which we would like to prove to hold when the function returns). The Verus compiler converts the pre- and postconditions of each function into a logical representation and searches for a proof that all executions that satisfy the preconditions must, at each function exit, satisfy the postconditions.
 
 For complex verification, Verus also allows us to add *ghost state* that exists only during the verification. Because ghost variables are not compiled into executable code, they have no performance impact. They are only used to instrument the code to make information about the broader system legible to the verifier. For example, Verus' pointer libraries provide a ghost [`PointsTo<T>`](https://verus-lang.github.io/verus/verusdoc/vstd/simple_pptr/struct.PointsTo.html) type which encodes the current state of a piece of raw memory containing an object of type `T`. A `PointsTo` can only be constructed and modified through [*valid pointer operations*](https://verus-lang.github.io/verus/verusdoc/vstd/simple_pptr/struct.PPtr.html#example), so its existence provides the "witness" for Verus that the current state of an object in memory is valid.
+
+To see the difference this makes, compare a raw pointer write against its Verus counterpart. In ordinary Rust, dereferencing a `*mut` is `unsafe`: the programmer must promise that the pointer is valid. In Verus, the write instead consumes a `PointsTo` permission, so the memory access is only accepted when the programmer can produce that witness. The permission then updates with the new value to use for later proofs. In the example below, `Tracked` is a kind of ghost object that obeys the borrow checker, using Rust's existing infrastructure to ensure that the permission is unique.
+
+<style>
+.code-cols .highlight pre {
+  width: max-content;
+  min-width: 100%;
+  box-sizing: border-box;
+}
+.code-cols .highlight code,
+.code-cols .highlight span {
+  font-size: 0.21rem;
+}
+/* Rouge's Rust lexer has no rules for `<`, `>` or `&` inside a
+   `#[...]` attribute, so it emits Error tokens there. Neutralize the
+   default red-on-pink `.err` styling for this post's code blocks. */
+.highlight .err {
+  color: inherit;
+  background-color: transparent;
+}
+</style>
+
+<div class="code-cols" style="display: flex; gap: 1rem; margin: 1rem 0; align-items: flex-start;">
+<div style="flex: 1 1 0; min-width: 0; overflow-x: auto;" markdown="1">
+**Raw Rust**
+
+```rust
+unsafe fn set(ptr: *mut u8, val: u8) {
+    *ptr = val;
+}
+```
+</div>
+<div style="flex: 1 1 0; min-width: 0; overflow-x: auto;" markdown="1">
+**Verus**
+
+```rust
+fn set(ptr: PPtr<u8>, val: u8,
+       perm: Tracked<&mut PointsTo<u8>>)
+    requires
+        old(perm).pptr() == ptr,
+        !old(perm).is_init(),
+    ensures  final(perm).value() == val,
+{
+    ptr.put(perm, val);
+}
+```
+</div>
+</div>
 
 We define our own ghost types that track parts of the system state that are invisible to any given function. A page table is a tree of nodes and their entries, so a [`PageTableOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/struct.PageTableOwner.html) is a tree of [`EntryOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/entry_owners/struct.EntryOwner.html) and [`NodeOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/owners/struct.NodeOwner.html) ghost objects, each describing the current state of a concrete object in the system without the need for executable code to access it.
 
@@ -50,10 +100,8 @@ Take as a concrete example the function `Entry::replace`, which overwrites a pag
 unsafe { self.node.write_pte(self.idx, self.pte) };
 ```
 
-In Verus, these promises can be made explicit preconditions of `write_pte` as below, which takes an additional ghost argument of type `NodeOwner`. `Tracked` here is a kind of ghost object that obeys the borrow checker.
+In Verus, these promises can be made explicit preconditions of `write_pte` as below, which takes an additional ghost argument of type `NodeOwner`.
 
-<!--
-Jekyll cannot render Rust macro with a `>` character, so we use a PNG image instead.
 
 ```rust
 #[verus_spec(with Tracked(owner): Tracked<&mut NodeOwner<C>>)]
@@ -66,9 +114,6 @@ fn write_pte(&mut self, idx: usize, pte: C::E)
       owner.children.value() == old(owner).children.value().update[idx, pte],
       ...
 ```
--->
-
-<img src="/assets/images/verifying-ostd-soundness/write_pte_spec.png" alt="write_pte() function specification" style="max-width: 700px; width: 95%; height: auto;">
 
 ### Vertical Composition
 
@@ -130,31 +175,12 @@ By induction, if the system starts in a valid state, and every possible API call
 
 <img src="/assets/images/verifying-ostd-soundness/horizontal.png" alt="Soundness as Horizontal Composition" style="max-width: 800px; width: 100%; height: auto;">
 
-To see this in practice, let's look at selected clauses from `metaregion_sound`, the most critical system invariant in the memory management (`mm`) module. Below is an abbreviated version. This rule is defined on an [`EntryOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/entry_owners/struct.EntryOwner.html#method.metaregion_sound), the abstract ghost state associated with an entry in a page table. It asserts that the associated page table entry matches the global physical memory records ([`MetaRegionOwners`](https://asterinas.github.io/vostd/ostd/specs/mm/frame/meta_region_owners/struct.MetaRegionOwners.html)), which live in a special metadata region.
+What kinds of facts are included in the invariant? Most invariants are tied to types. To list a few:
+- every `Frame` object corresponds to a valid piece of metadata tracked in a special region ([`MetaRegionOwners`](https://asterinas.github.io/vostd/ostd/specs/mm/frame/meta_region_owners/struct.MetaRegionOwners.html))
+- all shareable frames have a reference count between 0 and `REF_COUNT_MAX` ([`MetaSlotOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/frame/meta_owners/struct.MetaSlotOwner.html#method.inv))
+- each page table lives in a frame that is exclusively allocated for that purpose, while leaf entries may exist at multiple points in the tree ([`EntryOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/entry_owners/struct.EntryOwner.html#method.metaregion_sound))
 
-```rust
-impl<C: PageTableConfig> EntryOwner<C> {
-
-    pub open spec fn metaregion_sound(self, regions: MetaRegionOwners) -> bool {
-        let idx = frame_to_index(self.meta_slot_paddr().unwrap());
-        if self.is_node() {
-            &&& 0 < regions.ref_count(idx) <= REF_COUNT_MAX
-            &&& regions.slot_owners[idx].paths_in_pt == set![self.path]
-            // Other conditions omitted
-        } else if self.is_frame() {
-            &&& regions.slot_owners[idx].paths_in_pt.contains(self.path)
-            // Other conditions omitted
-        } else {
-            true
-        }
-    }
-
-}
-```
-
-The [`paths_in_pt`](https://asterinas.github.io/vostd/ostd/specs/mm/frame/meta_owners/struct.MetaSlotOwner.html#structfield.paths_in_pt) clause in the `is_node()` branch ensures that each page table internal **node** corresponds to exactly one position in the tree. The equivalent condition for mapped frames (`.is_frame()`) is weaker, only requiring that the current entry's path be contained in the set, because the same physical frame may legitimately be mapped to multiple virtual addresses simultaneously.
-
-Collectively, system invariants like `metaregion_sound` define the strict rules that every public API must preserve. This is exactly why verifying isolated functions is insufficient. Even if individual functions are completely correct in a vacuum, any unverified code touching the same data structures could silently violate these shared invariants, thus collapsing the entire system's proof. To guarantee true soundness, the module must be verified as a cohesive whole. We check the final soundness property by embedding the specifications of verified functions in a state machine, which may take arbitrary steps using the specification of any function in any order.
+...and many more. Collectively, these system invariants restrict the states that the system is allowed to enter. This is why verifying isolated functions is insufficient. Even if individual functions are completely correct in a vacuum, any unverified code touching the same data structures could silently violate these shared invariants, thus invalidating the entire system's proof. To guarantee true soundness, the module must be verified as a cohesive whole. We check the final soundness property by embedding the specifications of verified functions in a state machine, which may take arbitrary steps using the specification of any function in any order, and proving by induction that every execution of that state machine gives a defined result.
 
 ## Does the Methodology Scale?
 
