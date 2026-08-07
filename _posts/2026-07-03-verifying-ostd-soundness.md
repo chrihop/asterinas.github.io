@@ -92,7 +92,7 @@ fn set(ptr: PPtr<u8>, val: u8,
 
 We define our own ghost types that track parts of the system state that are invisible to any given function. For example, a page table is a tree of nodes and their entries, so a [`PageTableOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/struct.PageTableOwner.html) is a tree of [`EntryOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/entry_owners/struct.EntryOwner.html) and [`NodeOwner`](https://asterinas.github.io/vostd/ostd/specs/mm/page_table/node/owners/struct.NodeOwner.html) ghost objects, each describing the current state of a concrete object in the system without the need for executable code to access it.
 
-Let's zoom in on the function [`Entry::replace`](https://asterinas.github.io/vostd/src/ostd/mm/page_table/node/entry.rs.html#365), which overwrites a page table entry. In non-verified code, the function makes three promises when it calls the unsafe [`write_pte`](https://asterinas.github.io/vostd/ostd/mm/page_table/struct.PageTableGuard.html#method.write_pte):
+Let's zoom in on the function [`Entry::replace`](https://github.com/asterinas/vostd/blob/f0094f8a5ca5793c3cb67ba1160f8db7aea179fb/ostd/src/mm/page_table/node/entry.rs#L365), which overwrites a page table entry. In non-verified code, the function makes three promises when it calls the unsafe [`write_pte`](https://asterinas.github.io/vostd/ostd/mm/page_table/struct.PageTableGuard.html#method.write_pte):
 
 ```rust
 // SAFETY:
